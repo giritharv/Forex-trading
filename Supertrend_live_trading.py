@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime, timezone
 import pandas_ta as ta
 
-account_id = '101-001-29547380-002'
+account_id = '101-001-29547380-003'
 auth_key = '092af57694cb1b574df2aff2675e1483-fa3f75bdb3247ef47e530eda8fb98359'
 api_url = 'https://api-fxpractice.oanda.com/v3'
 
