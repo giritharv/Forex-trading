@@ -5,8 +5,8 @@ import pandas as pd
 from datetime import datetime, timezone
 import pandas_ta as ta
 
-account_id = '101-001-29547380-003'
-auth_key = '092af57694cb1b574df2aff2675e1483-fa3f75bdb3247ef47e530eda8fb98359'
+account_id = '101-001-29547380-004'
+auth_key = '9d9ec46eb7f1847d00ad7cae2ae23bf8-95e63748ad228acf5d88954c3e75d6f9'
 api_url = 'https://api-fxpractice.oanda.com/v3'
 
 headers = {
@@ -35,7 +35,7 @@ def get_live_price(instrument):
         print(f"Error fetching live price: {response.text}")
     return None, None
 
-def get_historical_data(instrument, granularity="M15", count=200):
+def get_historical_data(instrument, granularity="M15", count=500):
     url = f'{api_url}/instruments/{instrument}/candles'
     params = {
         'count': count,
@@ -59,14 +59,6 @@ def get_historical_data(instrument, granularity="M15", count=200):
     else:
         print(f"Error fetching historical data: {response.text}")
         return None
-
-def calculate_supertrend(df):
-    df['ATR_14'] = ta.atr(high=df['high'], low=df['low'], close=df['close'], length=14)
-    supertrend = df.ta.supertrend(high='high', low='low', close='close', atr_period=12, multiplier=3.0)
-    df['ST_direction'] = supertrend['SUPERTd_7_3.0']
-    df['DEMA_200'] = ta.dema(df['close'], length=200)
-    return df
-
 def get_account_balance():
     url = f"{api_url}/accounts/{account_id}/summary"
     response = requests.get(url, headers=headers)
@@ -97,7 +89,21 @@ def place_order(instrument, lot_size, entry_price, atr_value):
     url = f'{api_url}/accounts/{account_id}/orders'
     response = requests.post(url, headers=headers, data=json.dumps(order_data))
     if response.status_code == 201:
-        print(f"Order placed successfully: {response.json()}")
+        # Extract relevant details from the response
+        order_response = response.json()
+        units = order_response['orderCreateTransaction']['units']
+
+        entry_time = order_response['orderCreateTransaction']['time']
+        stop_loss = order_response['orderCreateTransaction']['stopLossOnFill']['price']
+        position_type = 'long' if int(units) > 0 else 'short'
+        # Display extracted information
+        print('Order Placed Succesfully......')
+        print(order_response)
+        print(f'Position Type: {position_type}')
+        print(f'units: {units}')
+
+        print(f'Entry Time: {entry_time}')
+        print(f'Stop Loss Price: {stop_loss}')
         return True
     else:
         print(f"Error placing order: {response.text}")
@@ -122,35 +128,73 @@ def close_trade(instrument, units):
 
 trade_open = False
 current_position = 0
+
+def get_open_positions():
+    url = f'{api_url}/accounts/{account_id}/positions'
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        positions_data = response.json()
+        for position in positions_data.get('positions', []):
+            if position['instrument'] == 'EUR_USD':
+                return position['long']['units'], position['short']['units']
+    else:
+        print(f"Error fetching open positions: {response.text}")
+    return 0, 0
 def supertrend_strategy():
     global trade_open, current_position
-
     instrument = 'EUR_USD'
     df = get_historical_data(instrument)
 
     if df is not None:
 
-        df = calculate_supertrend(df)
+        df['ATR_14'] = ta.atr(high=df['high'], low=df['low'], close=df['close'], length=14)
+        supertrend = df.ta.supertrend(high='high', low='low', close='close', length=12, multiplier=3.0)
+        df['ST_direction'] = supertrend['SUPERTd_12_3.0']
+        dema = ta.dema(df['close'], length=200)
+        df['DEMA_200'] = round(dema, 5)
+        macd = ta.macd(df['close'], fast=12, slow=26, signal=9)  # Standard MACD settings
+        df['MACD_Line'] = macd['MACD_12_26_9']  # MACD Line
+        df['Signal_Line'] = macd['MACDs_12_26_9']  # Signal Line
+        df['MACD_Histogram'] = macd['MACDh_12_26_9']  # Histogram
+        df['MACD_Line'] = df['MACD_Line'].round(5)
+        df['Signal_Line'] = df['Signal_Line'].round(5)
+        df['MACD_Histogram'] = df['MACD_Histogram'].round(5)
         last_row = df.iloc[-1]
+        previous_row = df.iloc[-2]
         atr_value = last_row['ATR_14'] * 2
+        print(f"Previous row time is {previous_row['time']}")
+        print(f"Previous row close :{previous_row['close']}")
+        print(f"Previous row DEMA  :{previous_row['DEMA_200']}")
+        print(f"Supertrend {previous_row['ST_direction']}")
+        print("-----------------------------------------------")
+        print(f"Last row time is {last_row['time']}")
+        print(f"Last row close :{last_row['close']}")
+        print(f"last row DEMA  :{last_row['DEMA_200']}")
+        print(f"Supertrend {last_row['ST_direction']}")
+        print(f"Last row MACD line        :{float(last_row['MACD_Line']):.6f}")
+        print(f"Last row MACD SIgnal line :{float(last_row['Signal_Line']):.6f}")
+        print("-----------------------------------------------")
+
         balance = get_account_balance()
         if balance is None:
             print("Failed to fetch account balance. Skipping strategy execution.")
             return
         risk_amount = (0.5/100)*balance
         lots = risk_amount/(atr_value*100000)
-        size = round(lots, 2)
-        lot_size = size * 100000
+        size = lots
+        lot_size = round(size * 100000)
         bid_price, ask_price = get_live_price(instrument)
+        long_position, short_position = get_open_positions()
         if current_position == 0:
-            if last_row['ST_direction'] == 1 and last_row['close'] > last_row['DEMA_200']:
-                print("Buy Signal: Supertrend is bullish")
+            if (last_row['ST_direction'] == 1
+                and last_row['close'] > last_row['DEMA_200']
+                and last_row['MACD_Line'] > last_row['Signal_Line']):
                 if bid_price and ask_price:
                     trade_open = place_order(instrument, lot_size, ask_price, atr_value)
                     if trade_open:
                         current_position = 1
 
-            elif last_row['ST_direction'] == -1 and last_row['close'] < last_row['DEMA_200']:
+            elif last_row['ST_direction'] == -1 and last_row['close'] < last_row['DEMA_200'] and last_row['MACD_Line'] < last_row['Signal_Line']:
                 print("Sell Signal: Supertrend is bearish")
                 if bid_price and ask_price:
                     trade_open = place_order(instrument, -lot_size, bid_price, atr_value)
@@ -158,14 +202,16 @@ def supertrend_strategy():
                         current_position = -1
 
         elif current_position == 1 and last_row['ST_direction'] == -1:
-            print("Closing Buy Position: Supertrend turned bearish")
-            close_trade(instrument, int(lot_size * 100000))
-            current_position = 0
+            if int(long_position) > 0:
+                print("Closing Buy Position: Supertrend turned bearish")
+                close_trade(instrument, int(lot_size))
+                current_position = 0
 
         elif current_position == -1 and last_row['ST_direction'] == 1:
-            print("Closing Sell Position: Supertrend turned bullish")
-            close_trade(instrument, int(lot_size * 100000))
-            current_position = 0
+            if int(short_position) > 0:
+                print("Closing Sell Position: Supertrend turned bullish")
+                close_trade(instrument, int(-lot_size))
+                current_position = 0
 
 def wait_until_next_interval():
     now = datetime.now(timezone.utc)
@@ -183,5 +229,6 @@ def wait_until_next_interval():
 
 while True:
     print("Executing Supertrend strategy...")
+    print('================================')
     supertrend_strategy()
     wait_until_next_interval()
